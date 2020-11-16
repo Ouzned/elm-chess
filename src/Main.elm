@@ -28,7 +28,7 @@ type Color
 
 
 type PieceType
-    = Pawn { hasMoved : Bool }
+    = Pawn Bool
     | King { kingCastling : Bool, queenCastling : Bool }
     | Queen
     | Rook
@@ -118,7 +118,7 @@ startingBoard =
 
         pawns =
             List.repeat 8
-                (Piece <| Pawn { hasMoved = False })
+                (Piece <| Pawn False)
 
         majorPieces =
             List.map Piece <|
@@ -212,7 +212,7 @@ availableCells board cell prevMove =
                 Bishop ->
                     bishopMoves board cell
 
-                Pawn { hasMoved } ->
+                Pawn hasMoved ->
                     pawnMoves board cell piece.color hasMoved
                         ++ Maybe.values [ enPassant cell piece.color prevMove ]
 
@@ -220,7 +220,7 @@ availableCells board cell prevMove =
                     []
 
                 Knight ->
-                    knightMoves board cell piece.color
+                    knightMoves board cell
     in
     pieceAt board cell
         |> Maybe.unwrap [] getMoves
@@ -266,8 +266,8 @@ leftRookOrigin color =
         ( 8, 1 )
 
 
-cellInDirection : Cell -> Direction -> Maybe Cell
-cellInDirection start dir =
+nextCell : Cell -> Direction -> Maybe Cell
+nextCell start dir =
     let
         ( row, col ) =
             start
@@ -286,49 +286,38 @@ cellInDirection start dir =
             fromInt { row = row, col = col + 1 }
 
         UpLeft ->
-            cellInDirections start [ Up, Left ]
+            jump start [ Up, Left ]
 
         UpRight ->
-            cellInDirections start [ Up, Right ]
+            jump start [ Up, Right ]
 
         DownLeft ->
-            cellInDirections start [ Down, Left ]
+            jump start [ Down, Left ]
 
         DownRight ->
-            cellInDirections start [ Down, Right ]
+            jump start [ Down, Right ]
 
 
-allCellsInDirection : Cell -> Direction -> List Cell
-allCellsInDirection start dir =
+followDirection : Cell -> Direction -> List Cell
+followDirection start dir =
     let
         doRepeat c =
-            c :: allCellsInDirection c dir
+            c :: followDirection c dir
     in
-    cellInDirection start dir
+    nextCell start dir
         |> Maybe.unwrap [] doRepeat
 
 
-cellInDirections : Cell -> List Direction -> Maybe Cell
-cellInDirections start dirs =
+jump : Cell -> List Direction -> Maybe Cell
+jump start dirs =
     let
         flipMove dir cell =
-            cellInDirection cell dir
+            nextCell cell dir
 
         nextDir dir cell =
             Maybe.andThen (flipMove dir) cell
     in
     List.foldl nextDir (Just start) dirs
-
-
-captureDirection : Board -> Color -> Cell -> Direction -> Maybe Cell
-captureDirection board color start dir =
-    let
-        isNotOpponent cell =
-            isEmpty board cell || isColor color board cell
-    in
-    allCellsInDirection start dir
-        |> List.dropWhile isNotOpponent
-        |> List.head
 
 
 capture : Board -> Color -> Cell -> Direction -> Maybe Cell
@@ -337,31 +326,42 @@ capture board color start dir =
         isOpponent =
             isColor (oppositeColor color) board
     in
-    cellInDirection start dir
+    nextCell start dir
         |> Maybe.filter isOpponent
 
 
-step : Board -> Cell -> Direction -> Maybe Cell
-step board start dir =
-    cellInDirection start dir
-        |> Maybe.filter (isEmpty board)
-
-
-moveDirection : Board -> Cell -> Direction -> List Cell
-moveDirection board start dir =
-    step board start dir
-        |> Maybe.map (\c -> c :: moveDirection board c dir)
-        |> Maybe.withDefault []
-
-
-moveAllDirections : Board -> Cell -> List Direction -> List Cell
-moveAllDirections board start dirs =
-    List.concatMap (moveDirection board start) dirs
+captureDirection : Board -> Color -> Cell -> Direction -> Maybe Cell
+captureDirection board color start dir =
+    let
+        isNotOpponent cell =
+            isEmpty board cell || isColor color board cell
+    in
+    followDirection start dir
+        |> List.dropWhile isNotOpponent
+        |> List.head
 
 
 captureAllDirections : Board -> Cell -> Color -> List Direction -> List Cell
 captureAllDirections board start color dirs =
     List.filterMap (captureDirection board color start) dirs
+
+
+step : Board -> Cell -> Direction -> Maybe Cell
+step board start dir =
+    nextCell start dir
+        |> Maybe.filter (isEmpty board)
+
+
+stepDirection : Board -> Cell -> Direction -> List Cell
+stepDirection board start dir =
+    step board start dir
+        |> Maybe.map (\c -> c :: stepDirection board c dir)
+        |> Maybe.withDefault []
+
+
+stepAllDirections : Board -> Cell -> List Direction -> List Cell
+stepAllDirections board start dirs =
+    List.concatMap (stepDirection board start) dirs
 
 
 
@@ -371,31 +371,6 @@ captureAllDirections board start color dirs =
 toStandardMove : Cell -> Cell -> Move
 toStandardMove src dst =
     { src = src, dst = dst, moveType = Standard }
-
-
-knightMoves : Board -> Cell -> Color -> List Move
-knightMoves board src color =
-    let
-        dirs =
-            [ [ Up, Up, Left ]
-            , [ Up, Up, Right ]
-            , [ Up, Right, Right ]
-            , [ Up, Left, Left ]
-            , [ Down, Down, Right ]
-            , [ Down, Down, Left ]
-            , [ Down, Left, Left ]
-            , [ Down, Right, Right ]
-            ]
-
-        jump =
-            cellInDirections src
-
-        otherColorOrEmpty =
-            not << isColor color board
-    in
-    List.filterMap jump dirs
-        |> List.filter otherColorOrEmpty
-        |> List.map (toStandardMove src)
 
 
 pawnForward : Color -> Direction
@@ -410,6 +385,19 @@ pawnForward color =
 rookDirections : List Direction
 rookDirections =
     [ Up, Down, Left, Right ]
+
+
+knightDirections : List (List Direction)
+knightDirections =
+    [ [ Up, Up, Left ]
+    , [ Up, Up, Right ]
+    , [ Up, Right, Right ]
+    , [ Up, Left, Left ]
+    , [ Down, Down, Right ]
+    , [ Down, Down, Left ]
+    , [ Down, Left, Left ]
+    , [ Down, Right, Right ]
+    ]
 
 
 bishopDirections : List Direction
@@ -429,7 +417,37 @@ queenDirections =
 
 rookMoves : Board -> Cell -> List Move
 rookMoves board start =
-    moveAllDirections board start rookDirections
+    stepAllDirections board start rookDirections
+        |> List.map (toStandardMove start)
+
+
+knightMoves : Board -> Cell -> List Move
+knightMoves board start =
+    List.filterMap (jump start) knightDirections
+        |> List.filter (isEmpty board)
+        |> List.map (toStandardMove start)
+
+
+knightCaptures : Board -> Cell -> Color -> List Move
+knightCaptures board start color =
+    let
+        isOpponent =
+            isColor (oppositeColor color) board
+    in
+    List.filterMap (jump start) knightDirections
+        |> List.filter isOpponent
+        |> List.map (toStandardMove start)
+
+
+bishopMoves : Board -> Cell -> List Move
+bishopMoves board start =
+    stepAllDirections board start bishopDirections
+        |> List.map (toStandardMove start)
+
+
+bishopCaptures : Board -> Cell -> Color -> List Move
+bishopCaptures board start color =
+    captureAllDirections board start color bishopDirections
         |> List.map (toStandardMove start)
 
 
@@ -449,21 +467,9 @@ kingCaptures board start color =
         |> List.map (toStandardMove start)
 
 
-bishopMoves : Board -> Cell -> List Move
-bishopMoves board start =
-    moveAllDirections board start bishopDirections
-        |> List.map (toStandardMove start)
-
-
-bishopCaptures : Board -> Cell -> Color -> List Move
-bishopCaptures board start color =
-    captureAllDirections board start color bishopDirections
-        |> List.map (toStandardMove start)
-
-
 queenMoves : Board -> Cell -> List Move
 queenMoves board start =
-    moveAllDirections board start queenDirections
+    stepAllDirections board start queenDirections
         |> List.map (toStandardMove start)
 
 
@@ -525,7 +531,7 @@ enPassant start color prevMove =
             prevMove.dst
 
         targetCell =
-            cellInDirection opponentCell (pawnForward color)
+            nextCell opponentCell (pawnForward color)
 
         toMove dst =
             Just <|

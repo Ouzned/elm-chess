@@ -191,8 +191,7 @@ isColor color board cell =
             (==) color << .color
     in
     pieceAt board cell
-        |> Maybe.map sameColor
-        |> Maybe.withDefault False
+        |> Maybe.unwrap False sameColor
 
 
 opposite : Color -> Color
@@ -317,6 +316,12 @@ step : Board -> Direction -> Cell -> Maybe Cell
 step board dir src =
     cellInDirection dir src
         |> Maybe.filter (isEmpty board)
+
+
+stepAll : Board -> Direction -> Cell -> Maybe Cell
+stepAll board dir start =
+    step board dir start
+        |> Maybe.andThen (stepAll board dir)
 
 
 repeat : (Cell -> Maybe Cell) -> Cell -> List Cell
@@ -458,6 +463,16 @@ enPassant start color prevMove =
 
         _ ->
             Nothing
+
+
+castling : Board -> Cell -> Color -> Direction -> Maybe Move
+castling board start color dir =
+    let
+        targetCell =
+            cellInDirections start
+                [ dir, dir ]
+    in
+    Nothing
 
 
 pawnMoveNb : Bool -> Int

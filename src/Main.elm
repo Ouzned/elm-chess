@@ -3,7 +3,7 @@ module Main exposing (..)
 import Browser
 import Dict
 import Html exposing (Html, div, h1, img, text)
-import Html.Attributes exposing (dir, src)
+import Html.Attributes exposing (dir, src, target)
 import List
 import List.Extra as List
 import Maybe.Extra as Maybe
@@ -39,6 +39,7 @@ type PieceType
 type alias Piece =
     { pieceType : PieceType
     , color : Color
+    , position : Cell
     }
 
 
@@ -70,7 +71,7 @@ type Game
 
 
 type alias Move =
-    { src : Cell
+    { piece : Piece
     , dst : Cell
     , moveType : MoveType
     }
@@ -79,7 +80,7 @@ type alias Move =
 type MoveType
     = Standard
     | PawnStart
-    | EnPassant Cell
+    | EnPassant Piece
     | Castling
         { rook : Cell
         , rookDst : Cell
@@ -127,8 +128,8 @@ availableMoves (Game game) =
             )
         |> Dict.map
             (\cell piece ->
-                pieceCaptures game.board cell piece
-                    ++ pieceSteps game.board cell piece
+                pieceCaptures game.board piece
+                    ++ pieceSteps game.board piece
             )
         |> (List.concat << Dict.values)
         |> List.map simulateMove
@@ -143,13 +144,7 @@ playMove (Game game) move =
             oppositeColor game.player
 
         newBoard =
-            pieceAt game.board move.src
-                |> Maybe.map
-                    (\piece ->
-                        Dict.insert move.dst piece game.board
-                    )
-                |> Maybe.map (Dict.remove move.src)
-                |> Maybe.withDefault game.board
+            applyMove game.board move
     in
     Game
         { game
@@ -160,6 +155,17 @@ playMove (Game game) move =
             , isCheck = isCheck newBoard nextPlayer
             , isCheckmate = False
         }
+
+
+applyMove : Board -> Move -> Board
+applyMove board move =
+    case move.moveType of
+        EnPassant target ->
+            movePiece board move.piece move.dst
+                |> (\newBoard -> removePiece newBoard target)
+
+        _ ->
+            movePiece board move.piece move.dst
 
 
 
@@ -188,8 +194,12 @@ startingBoard =
             ]
 
         rowPieces index color pieces =
-            List.map (\pieceType -> { color = color, pieceType = pieceType }) pieces
-                |> List.map2 Tuple.pair (row index)
+            List.map2
+                (\pieceType pos ->
+                    { color = color, pieceType = pieceType, position = pos }
+                )
+                pieces
+                (row index)
 
         allPieces =
             rowPieces 1 White majorPieces
@@ -197,8 +207,8 @@ startingBoard =
                 ++ rowPieces 7 Black pawns
                 ++ rowPieces 8 Black majorPieces
 
-        insertPiece ( cell, piece ) board =
-            Dict.insert cell piece board
+        insertPiece piece board =
+            Dict.insert piece.position piece board
     in
     List.foldl insertPiece Dict.empty allPieces
 
@@ -207,7 +217,7 @@ isThreatenedBy : Board -> Cell -> Color -> Bool
 isThreatenedBy board target color =
     let
         getCaptures =
-            pieceCaptures board target
+            pieceCaptures board
     in
     Dict.values board
         |> List.filter ((==) color << .color)
@@ -265,6 +275,21 @@ oppositeColor color =
 
     else
         White
+
+
+movePiece : Board -> Piece -> Cell -> Board
+movePiece board piece target =
+    let
+        newPiece =
+            { piece | position = target }
+    in
+    removePiece board piece
+        |> Dict.insert target newPiece
+
+
+removePiece : Board -> Piece -> Board
+removePiece board piece =
+    Dict.remove piece.position board
 
 
 
@@ -408,27 +433,27 @@ pawnMoveNb hasMoved =
 -- PIECE MOVES --
 
 
-toStandardMove : Cell -> Cell -> Move
-toStandardMove src dst =
-    { src = src
+toStandardMove : Piece -> Cell -> Move
+toStandardMove piece dst =
+    { piece = piece
     , dst = dst
     , moveType = Standard
     }
 
 
-toPawnStartMove : Cell -> Cell -> Move
-toPawnStartMove src dst =
-    { src = src
+toPawnStartMove : Piece -> Cell -> Move
+toPawnStartMove piece dst =
+    { piece = piece
     , dst = dst
     , moveType = PawnStart
     }
 
 
-toEnPassantMove : Cell -> Cell -> Cell -> Move
-toEnPassantMove start dst capture =
-    { src = start
+toEnPassantMove : Piece -> Piece -> Cell -> Move
+toEnPassantMove piece opponent dst =
+    { piece = piece
     , dst = dst
-    , moveType = EnPassant capture
+    , moveType = EnPassant opponent
     }
 
 
@@ -441,31 +466,19 @@ unThreatenedMoves board color moves =
         moves
 
 
-pieceCaptures : Board -> Cell -> Piece -> Maybe Move -> List Move
-pieceCaptures board start piece prevMove =
+pieceCaptures : Board -> Piece -> List Move
+pieceCaptures board piece =
     let
         opponentColor =
             oppositeColor piece.color
 
         captureDirs dirs =
-            List.filterMap (findColorCell board start opponentColor) dirs
-                |> List.map (toStandardMove start)
+            List.filterMap (findColorCell board piece.position opponentColor) dirs
+                |> List.map (toStandardMove piece)
 
         captureNext dirs =
-            List.filterMap (nextColorCell board start opponentColor) dirs
-                |> List.map (toStandardMove start)
-
-        enPassant =
-            prevMove
-                |> Maybe.filter
-                    (\move ->
-                        move.moveType == PawnStart && isNextTo move.dst start
-                    )
-                |> Maybe.andThen
-                    (\{ dst } ->
-                        nextCell dst (pawnMoveDirection opponentColor)
-                            |> Maybe.map (\target -> toEnPassantMove start target dst)
-                    )
+            List.filterMap (nextColorCell board piece.position opponentColor) dirs
+                |> List.map (toStandardMove piece)
     in
     case piece.pieceType of
         Rook ->
@@ -485,31 +498,30 @@ pieceCaptures board start piece prevMove =
 
         Pawn _ ->
             captureNext (pawnCaptureDirections piece.color)
-                |> List.append (Maybe.toList enPassant)
 
 
-pieceSteps : Board -> Cell -> Piece -> List Move
-pieceSteps board start piece =
+pieceSteps : Board -> Piece -> List Move
+pieceSteps board piece =
     let
         opponentColor =
             oppositeColor piece.color
 
         stepNext dirs =
-            List.filterMap (nextEmptyCell board start) dirs
-                |> List.map (toStandardMove start)
+            List.filterMap (nextEmptyCell board piece.position) dirs
+                |> List.map (toStandardMove piece)
 
         stepDirs dirs =
-            List.concatMap (findEmptyCells board start) dirs
-                |> List.map (toStandardMove start)
+            List.concatMap (findEmptyCells board piece.position) dirs
+                |> List.map (toStandardMove piece)
 
         pawnFirstStep dir =
-            nextEmptyCell board start dir
-                |> Maybe.map (toStandardMove start)
+            nextEmptyCell board piece.position dir
+                |> Maybe.map (toStandardMove piece)
 
         pawnStart dir =
             pawnFirstStep dir
                 |> Maybe.andThen (\{ dst } -> nextEmptyCell board dst dir)
-                |> Maybe.map (toPawnStartMove start)
+                |> Maybe.map (toPawnStartMove piece)
     in
     case piece.pieceType of
         Rook ->

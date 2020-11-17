@@ -95,6 +95,10 @@ type alias Direction =
     ( Row, Col )
 
 
+
+-- GAME FUNCTIONS --
+
+
 newGame : Game
 newGame =
     Game
@@ -105,6 +109,61 @@ newGame =
         , isCheck = False
         , isCheckmate = False
         }
+
+
+availableMoves : Game -> List Move
+availableMoves (Game game) =
+    let
+        simulateMove move =
+            ( move, playMove (Game game) move )
+
+        isMovePossible ( _, Game simulation ) =
+            not (isCheck simulation.board simulation.player)
+    in
+    game.board
+        |> Dict.filter
+            (\_ piece ->
+                piece.color == game.player
+            )
+        |> Dict.map
+            (\cell piece ->
+                pieceCaptures game.board cell piece
+                    ++ pieceSteps game.board cell piece
+            )
+        |> (List.concat << Dict.values)
+        |> List.map simulateMove
+        |> List.filter isMovePossible
+        |> List.map Tuple.first
+
+
+playMove : Game -> Move -> Game
+playMove (Game game) move =
+    let
+        nextPlayer =
+            oppositeColor game.player
+
+        newBoard =
+            pieceAt game.board move.src
+                |> Maybe.map
+                    (\piece ->
+                        Dict.insert move.dst piece game.board
+                    )
+                |> Maybe.map (Dict.remove move.src)
+                |> Maybe.withDefault game.board
+    in
+    Game
+        { game
+            | player = nextPlayer
+            , board = newBoard
+            , gameHistory = game.gameHistory ++ [ Game game ]
+            , lastMove = Just move
+            , isCheck = isCheck newBoard nextPlayer
+            , isCheckmate = False
+        }
+
+
+
+-- BOARD FUNCTIONS --
 
 
 startingBoard : Board
@@ -144,29 +203,6 @@ startingBoard =
     List.foldl insertPiece Dict.empty allPieces
 
 
-playMove : Game -> Move -> Game
-playMove (Game game) move =
-    let
-        nextPlayer =
-            oppositeColor game.player
-
-        newBoard =
-            pieceAt game.board move.src
-                |> Maybe.map (\piece -> Dict.insert move.dst piece game.board)
-                |> Maybe.map (Dict.remove move.src)
-                |> Maybe.withDefault game.board
-    in
-    Game
-        { game
-            | player = nextPlayer
-            , board = newBoard
-            , gameHistory = game.gameHistory ++ [ Game game ]
-            , lastMove = Just move
-            , isCheck = isCheck newBoard nextPlayer
-            , isCheckmate = False
-        }
-
-
 isThreatenedBy : Board -> Cell -> Color -> Bool
 isThreatenedBy board target color =
     let
@@ -193,7 +229,11 @@ isCheck board color =
         isChecked_ cell =
             isThreatenedBy board cell (oppositeColor color)
     in
-    Dict.filter (\_ piece -> isKing piece && piece.color == color) board
+    board
+        |> Dict.filter
+            (\_ piece ->
+                isKing piece && piece.color == color
+            )
         |> (List.head << Dict.keys)
         |> Maybe.unwrap False isChecked_
 
@@ -206,11 +246,6 @@ pieceAt board cell =
 isEmpty : Board -> Cell -> Bool
 isEmpty board cell =
     pieceAt board cell == Nothing
-
-
-hasPiece : Board -> Cell -> Bool
-hasPiece board =
-    not << isEmpty board
 
 
 isColor : Color -> Board -> Cell -> Bool
@@ -254,27 +289,12 @@ isNextTo ( row, col ) ( row_, col_ ) =
     row == row_ && abs (col - col_) == 1
 
 
-kingOrigin : Color -> Cell
-kingOrigin color =
-    if color == White then
-        ( 1, 4 )
-
-    else
-        ( 8, 4 )
-
-
-leftRookOrigin : Color -> Cell
-leftRookOrigin color =
-    if color == White then
-        ( 1, 1 )
-
-    else
-        ( 8, 1 )
-
-
 nextCell : Cell -> Direction -> Maybe Cell
 nextCell ( srcRow, srcCol ) ( row, col ) =
-    fromInt { row = srcRow + row, col = srcCol + col }
+    fromInt
+        { row = srcRow + row
+        , col = srcCol + col
+        }
 
 
 followDirection : Cell -> Direction -> List Cell
@@ -287,72 +307,34 @@ followDirection start dir =
         |> Maybe.unwrap [] doRepeat
 
 
-capture : Board -> Color -> Cell -> Direction -> Maybe Cell
-capture board color start dir =
-    let
-        isOpponent =
-            isColor (oppositeColor color) board
-    in
-    nextCell start dir
-        |> Maybe.filter isOpponent
-
-
-captureDirection : Board -> Color -> Cell -> Direction -> Maybe Cell
-captureDirection board color start dir =
-    let
-        isValidTarget =
-            isColor (oppositeColor color) board
-    in
-    followDirection start dir
-        |> List.dropWhile (isEmpty board)
-        |> List.head
-        |> Maybe.filter isValidTarget
-
-
-captureAllDirections : Board -> Cell -> Color -> List Direction -> List Cell
-captureAllDirections board start color dirs =
-    List.filterMap (captureDirection board color start) dirs
-
-
-step : Board -> Cell -> Direction -> Maybe Cell
-step board start dir =
-    nextCell start dir
+nextEmptyCell : Board -> Cell -> Direction -> Maybe Cell
+nextEmptyCell board cell dir =
+    nextCell cell dir
         |> Maybe.filter (isEmpty board)
 
 
-stepDirection : Board -> Cell -> Direction -> List Cell
-stepDirection board start dir =
-    step board start dir
-        |> Maybe.map (\c -> c :: stepDirection board c dir)
-        |> Maybe.withDefault []
+nextColorCell : Board -> Cell -> Color -> Direction -> Maybe Cell
+nextColorCell board cell color dir =
+    nextCell cell dir
+        |> Maybe.filter (isColor color board)
 
 
-stepAllDirections : Board -> Cell -> List Direction -> List Cell
-stepAllDirections board start dirs =
-    List.concatMap (stepDirection board start) dirs
+findColorCell : Board -> Cell -> Color -> Direction -> Maybe Cell
+findColorCell board start color dir =
+    followDirection start dir
+        |> List.dropWhile (isEmpty board)
+        |> List.head
+        |> Maybe.filter (isColor color board)
+
+
+findEmptyCells : Board -> Cell -> Direction -> List Cell
+findEmptyCells board start dir =
+    followDirection start dir
+        |> List.takeWhile (isEmpty board)
 
 
 
--- PIECE MOVES --
-
-
-toStandardMove : Cell -> Cell -> Move
-toStandardMove src dst =
-    { src = src, dst = dst, moveType = Standard }
-
-
-toPawnStartMove : Cell -> Cell -> Move
-toPawnStartMove src dst =
-    { src = src, dst = dst, moveType = PawnStart }
-
-
-pawnForward : Color -> Direction
-pawnForward color =
-    if color == White then
-        ( 1, 0 )
-
-    else
-        ( -1, 0 )
+-- PIECE DIRECTION --
 
 
 rookDirections : List Direction
@@ -395,189 +377,161 @@ queenDirections =
     kingDirections
 
 
-rookSteps : Board -> Cell -> List Move
-rookSteps board start =
-    stepAllDirections board start rookDirections
-        |> List.map (toStandardMove start)
+pawnCaptureDirections : Color -> List Direction
+pawnCaptureDirections color =
+    if color == White then
+        [ ( 1, 1 ), ( 1, -1 ) ]
+
+    else
+        [ ( -1, 1 ), ( -1, -1 ) ]
 
 
-rookCaptures : Board -> Cell -> Color -> List Move
-rookCaptures board start color =
-    captureAllDirections board start color rookDirections
-        |> List.map (toStandardMove start)
+pawnMoveDirection : Color -> Direction
+pawnMoveDirection color =
+    if color == White then
+        ( 1, 0 )
+
+    else
+        ( -1, 0 )
 
 
-knightSteps : Board -> Cell -> List Move
-knightSteps board start =
-    List.map (step board start) knightDirections
-        |> Maybe.values
-        |> List.map (toStandardMove start)
+pawnMoveNb : Bool -> Int
+pawnMoveNb hasMoved =
+    if hasMoved then
+        1
+
+    else
+        2
 
 
-knightCaptures : Board -> Cell -> Color -> List Move
-knightCaptures board start color =
-    List.map (capture board color start) knightDirections
-        |> Maybe.values
-        |> List.map (toStandardMove start)
+
+-- PIECE MOVES --
 
 
-bishopSteps : Board -> Cell -> List Move
-bishopSteps board start =
-    stepAllDirections board start bishopDirections
-        |> List.map (toStandardMove start)
+toStandardMove : Cell -> Cell -> Move
+toStandardMove src dst =
+    { src = src
+    , dst = dst
+    , moveType = Standard
+    }
 
 
-bishopCaptures : Board -> Cell -> Color -> List Move
-bishopCaptures board start color =
-    captureAllDirections board start color bishopDirections
-        |> List.map (toStandardMove start)
+toPawnStartMove : Cell -> Cell -> Move
+toPawnStartMove src dst =
+    { src = src
+    , dst = dst
+    , moveType = PawnStart
+    }
 
 
-queenSteps : Board -> Cell -> List Move
-queenSteps board start =
-    stepAllDirections board start queenDirections
-        |> List.map (toStandardMove start)
+toEnPassantMove : Cell -> Cell -> Cell -> Move
+toEnPassantMove start dst capture =
+    { src = start
+    , dst = dst
+    , moveType = EnPassant capture
+    }
 
 
-queenCaptures : Board -> Cell -> Color -> List Move
-queenCaptures board start color =
-    captureAllDirections board start color queenDirections
-        |> List.map (toStandardMove start)
+unThreatenedMoves : Board -> Color -> List Move -> List Move
+unThreatenedMoves board color moves =
+    List.filter
+        (\{ dst } ->
+            not (isThreatenedBy board dst color)
+        )
+        moves
 
 
-kingCaptures : Board -> Cell -> Color -> List Move
-kingCaptures board start color =
-    kingDirections
-        |> List.map (capture board color start)
-        |> Maybe.values
-        |> List.map (toStandardMove start)
-
-
-kingSteps : Board -> Cell -> List Move
-kingSteps board start =
-    kingDirections
-        |> List.map (step board start)
-        |> Maybe.values
-        |> List.map (toStandardMove start)
-
-
-pawnSteps : Board -> Cell -> Color -> Bool -> List Move
-pawnSteps board start color hasMoved =
+pieceCaptures : Board -> Cell -> Piece -> Maybe Move -> List Move
+pieceCaptures board start piece prevMove =
     let
-        moveNb =
-            if hasMoved then
-                1
+        opponentColor =
+            oppositeColor piece.color
 
-            else
-                2
+        captureDirs dirs =
+            List.filterMap (findColorCell board start opponentColor) dirs
+                |> List.map (toStandardMove start)
 
-        pawnDir =
-            pawnForward color
+        captureNext dirs =
+            List.filterMap (nextColorCell board start opponentColor) dirs
+                |> List.map (toStandardMove start)
 
-        pawnStep =
-            step board start pawnDir
-                |> Maybe.map (toStandardMove start)
-
-        pawnStart =
-            pawnStep
-                |> Maybe.andThen
+        enPassant =
+            prevMove
+                |> Maybe.filter
                     (\move ->
-                        step board move.dst pawnDir
+                        move.moveType == PawnStart && isNextTo move.dst start
                     )
-                |> Maybe.map (toPawnStartMove start)
+                |> Maybe.andThen
+                    (\{ dst } ->
+                        nextCell dst (pawnMoveDirection opponentColor)
+                            |> Maybe.map (\target -> toEnPassantMove start target dst)
+                    )
     in
-    [ pawnStep, pawnStart ]
-        |> List.take moveNb
-        |> Maybe.values
-
-
-pawnCaptures : Board -> Cell -> Color -> List Move
-pawnCaptures board start color =
-    let
-        captureDirections =
-            if color == White then
-                [ ( 1, 1 ), ( 1, -1 ) ]
-
-            else
-                [ ( -1, 1 ), ( -1, -1 ) ]
-    in
-    captureDirections
-        |> List.map (capture board color start)
-        |> Maybe.values
-        |> List.map (toStandardMove start)
-
-
-enPassant : Cell -> Color -> Move -> Maybe Move
-enPassant start color prevMove =
-    let
-        opponentCell =
-            prevMove.dst
-
-        targetCell =
-            nextCell opponentCell (pawnForward color)
-
-        toMove dst =
-            Just <|
-                { src = start
-                , dst = dst
-                , moveType =
-                    EnPassant opponentCell
-                }
-    in
-    case prevMove.moveType of
-        PawnStart ->
-            if isNextTo start opponentCell then
-                Maybe.andThen toMove targetCell
-
-            else
-                Nothing
-
-        _ ->
-            Nothing
-
-
-pieceCaptures : Board -> Cell -> Piece -> List Move
-pieceCaptures board cell piece =
     case piece.pieceType of
         Rook ->
-            rookCaptures board cell piece.color
+            captureDirs rookDirections
 
         Knight ->
-            knightCaptures board cell piece.color
+            captureNext knightDirections
 
         Bishop ->
-            bishopCaptures board cell piece.color
+            captureDirs bishopDirections
 
         King _ ->
-            kingCaptures board cell piece.color
+            captureNext kingDirections
 
         Queen ->
-            queenCaptures board cell piece.color
+            captureDirs queenDirections
 
         Pawn _ ->
-            pawnCaptures board cell piece.color
+            captureNext (pawnCaptureDirections piece.color)
+                |> List.append (Maybe.toList enPassant)
 
 
 pieceSteps : Board -> Cell -> Piece -> List Move
-pieceSteps board cell piece =
+pieceSteps board start piece =
+    let
+        opponentColor =
+            oppositeColor piece.color
+
+        stepNext dirs =
+            List.filterMap (nextEmptyCell board start) dirs
+                |> List.map (toStandardMove start)
+
+        stepDirs dirs =
+            List.concatMap (findEmptyCells board start) dirs
+                |> List.map (toStandardMove start)
+
+        pawnFirstStep dir =
+            nextEmptyCell board start dir
+                |> Maybe.map (toStandardMove start)
+
+        pawnStart dir =
+            pawnFirstStep dir
+                |> Maybe.andThen (\{ dst } -> nextEmptyCell board dst dir)
+                |> Maybe.map (toPawnStartMove start)
+    in
     case piece.pieceType of
         Rook ->
-            rookSteps board cell
+            stepDirs rookDirections
 
         Knight ->
-            knightSteps board cell
+            stepNext knightDirections
 
         Bishop ->
-            bishopSteps board cell
+            stepDirs bishopDirections
 
         King _ ->
-            kingSteps board cell
+            stepNext kingDirections
 
         Queen ->
-            queenSteps board cell
+            stepDirs queenDirections
 
         Pawn hasMoved ->
-            pawnSteps board cell piece.color hasMoved
+            [ pawnFirstStep, pawnStart ]
+                |> List.andMap [ pawnMoveDirection piece.color ]
+                |> Maybe.values
+                |> List.take (pawnMoveNb hasMoved)
 
 
 

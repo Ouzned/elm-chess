@@ -63,7 +63,9 @@ type Game
         { player : Color
         , board : Board
         , gameHistory : List Game
-        , moveHistory : List Move
+        , lastMove : Maybe Move
+        , isCheck : Bool
+        , isCheckmate : Bool
         }
 
 
@@ -99,7 +101,9 @@ newGame =
         { player = White
         , board = startingBoard
         , gameHistory = []
-        , moveHistory = []
+        , lastMove = Nothing
+        , isCheck = False
+        , isCheckmate = False
         }
 
 
@@ -111,22 +115,22 @@ startingBoard =
 
         pawns =
             List.repeat 8
-                (Piece <| Pawn False)
+                (Pawn False)
 
         majorPieces =
-            List.map Piece <|
-                [ Rook
-                , Knight
-                , Bishop
-                , King { kingCastling = True, queenCastling = True }
-                , Queen
-                , Bishop
-                , Knight
-                , Rook
-                ]
+            [ Rook
+            , Knight
+            , Bishop
+            , King { kingCastling = True, queenCastling = True }
+            , Queen
+            , Bishop
+            , Knight
+            , Rook
+            ]
 
         rowPieces index color pieces =
-            List.map2 Tuple.pair (row index) (List.map (\p -> p color) pieces)
+            List.map (\pieceType -> { color = color, pieceType = pieceType }) pieces
+                |> List.map2 Tuple.pair (row index)
 
         allPieces =
             rowPieces 1 White majorPieces
@@ -140,21 +144,58 @@ startingBoard =
     List.foldl insertPiece Dict.empty allPieces
 
 
-move_ : Cell -> Cell -> Board -> Board
-move_ src dst board =
+playMove : Game -> Move -> Game
+playMove (Game game) move =
     let
-        insert cell piece =
-            Dict.insert cell piece
+        nextPlayer =
+            oppositeColor game.player
 
-        remove cell =
-            Dict.remove cell
+        newBoard =
+            pieceAt game.board move.src
+                |> Maybe.map (\piece -> Dict.insert move.dst piece game.board)
+                |> Maybe.map (Dict.remove move.src)
+                |> Maybe.withDefault game.board
     in
-    case Dict.get src board of
-        Nothing ->
-            board
+    Game
+        { game
+            | player = nextPlayer
+            , board = newBoard
+            , gameHistory = game.gameHistory ++ [ Game game ]
+            , lastMove = Just move
+            , isCheck = isCheck newBoard nextPlayer
+            , isCheckmate = False
+        }
 
-        Just piece ->
-            (remove src << insert dst piece) board
+
+isThreatenedBy : Board -> Cell -> Color -> Bool
+isThreatenedBy board target color =
+    let
+        getCaptures =
+            pieceCaptures board target
+    in
+    Dict.values board
+        |> List.filter ((==) color << .color)
+        |> List.concatMap getCaptures
+        |> List.any ((==) target << .dst)
+
+
+isCheck : Board -> Color -> Bool
+isCheck board color =
+    let
+        isKing piece =
+            case piece.pieceType of
+                King _ ->
+                    True
+
+                _ ->
+                    False
+
+        isChecked_ cell =
+            isThreatenedBy board cell (oppositeColor color)
+    in
+    Dict.filter (\_ piece -> isKing piece && piece.color == color) board
+        |> (List.head << Dict.keys)
+        |> Maybe.unwrap False isChecked_
 
 
 pieceAt : Board -> Cell -> Maybe Piece
@@ -189,34 +230,6 @@ oppositeColor color =
 
     else
         White
-
-
-availableCells : Board -> Cell -> Move -> List Move
-availableCells board cell prevMove =
-    let
-        getMoves piece =
-            case piece.pieceType of
-                Queen ->
-                    queenMoves board cell
-
-                Rook ->
-                    rookMoves board cell
-
-                Bishop ->
-                    bishopMoves board cell
-
-                Pawn hasMoved ->
-                    pawnMoves board cell piece.color hasMoved
-                        ++ Maybe.values [ enPassant cell piece.color prevMove ]
-
-                King att ->
-                    []
-
-                Knight ->
-                    knightMoves board cell
-    in
-    pieceAt board cell
-        |> Maybe.unwrap [] getMoves
 
 
 
@@ -382,8 +395,8 @@ queenDirections =
     kingDirections
 
 
-rookMoves : Board -> Cell -> List Move
-rookMoves board start =
+rookSteps : Board -> Cell -> List Move
+rookSteps board start =
     stepAllDirections board start rookDirections
         |> List.map (toStandardMove start)
 
@@ -394,8 +407,8 @@ rookCaptures board start color =
         |> List.map (toStandardMove start)
 
 
-knightMoves : Board -> Cell -> List Move
-knightMoves board start =
+knightSteps : Board -> Cell -> List Move
+knightSteps board start =
     List.map (step board start) knightDirections
         |> Maybe.values
         |> List.map (toStandardMove start)
@@ -408,8 +421,8 @@ knightCaptures board start color =
         |> List.map (toStandardMove start)
 
 
-bishopMoves : Board -> Cell -> List Move
-bishopMoves board start =
+bishopSteps : Board -> Cell -> List Move
+bishopSteps board start =
     stepAllDirections board start bishopDirections
         |> List.map (toStandardMove start)
 
@@ -420,11 +433,15 @@ bishopCaptures board start color =
         |> List.map (toStandardMove start)
 
 
-kingMoves : Board -> Cell -> List Move
-kingMoves board start =
-    kingDirections
-        |> List.map (step board start)
-        |> Maybe.values
+queenSteps : Board -> Cell -> List Move
+queenSteps board start =
+    stepAllDirections board start queenDirections
+        |> List.map (toStandardMove start)
+
+
+queenCaptures : Board -> Cell -> Color -> List Move
+queenCaptures board start color =
+    captureAllDirections board start color queenDirections
         |> List.map (toStandardMove start)
 
 
@@ -436,20 +453,16 @@ kingCaptures board start color =
         |> List.map (toStandardMove start)
 
 
-queenMoves : Board -> Cell -> List Move
-queenMoves board start =
-    stepAllDirections board start queenDirections
+kingSteps : Board -> Cell -> List Move
+kingSteps board start =
+    kingDirections
+        |> List.map (step board start)
+        |> Maybe.values
         |> List.map (toStandardMove start)
 
 
-queenCaptures : Board -> Cell -> Color -> List Move
-queenCaptures board start color =
-    captureAllDirections board start color queenDirections
-        |> List.map (toStandardMove start)
-
-
-pawnMoves : Board -> Cell -> Color -> Bool -> List Move
-pawnMoves board start color hasMoved =
+pawnSteps : Board -> Cell -> Color -> Bool -> List Move
+pawnSteps board start color hasMoved =
     let
         moveNb =
             if hasMoved then
@@ -523,36 +536,48 @@ enPassant start color prevMove =
             Nothing
 
 
-allCaptures : Board -> Color -> List Move
-allCaptures board color =
-    let
-        filterColor _ piece =
-            piece.color == color
+pieceCaptures : Board -> Cell -> Piece -> List Move
+pieceCaptures board cell piece =
+    case piece.pieceType of
+        Rook ->
+            rookCaptures board cell piece.color
 
-        captureMoves cell piece =
-            case piece.pieceType of
-                Rook ->
-                    rookCaptures board cell piece.color
+        Knight ->
+            knightCaptures board cell piece.color
 
-                Knight ->
-                    knightCaptures board cell piece.color
+        Bishop ->
+            bishopCaptures board cell piece.color
 
-                Bishop ->
-                    bishopCaptures board cell piece.color
+        King _ ->
+            kingCaptures board cell piece.color
 
-                King _ ->
-                    kingCaptures board cell piece.color
+        Queen ->
+            queenCaptures board cell piece.color
 
-                Queen ->
-                    queenCaptures board cell piece.color
+        Pawn _ ->
+            pawnCaptures board cell piece.color
 
-                Pawn _ ->
-                    pawnCaptures board cell piece.color
-    in
-    Dict.filter filterColor board
-        |> Dict.map captureMoves
-        |> Dict.values
-        |> List.concat
+
+pieceSteps : Board -> Cell -> Piece -> List Move
+pieceSteps board cell piece =
+    case piece.pieceType of
+        Rook ->
+            rookSteps board cell
+
+        Knight ->
+            knightSteps board cell
+
+        Bishop ->
+            bishopSteps board cell
+
+        King _ ->
+            kingSteps board cell
+
+        Queen ->
+            queenSteps board cell
+
+        Pawn hasMoved ->
+            pawnSteps board cell piece.color hasMoved
 
 
 

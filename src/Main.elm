@@ -89,15 +89,8 @@ type CastlingType
     | CastlingKing
 
 
-type Direction
-    = Up
-    | Down
-    | Left
-    | Right
-    | UpLeft
-    | UpRight
-    | DownLeft
-    | DownRight
+type alias Direction =
+    ( Row, Col )
 
 
 newGame : Game
@@ -267,35 +260,8 @@ leftRookOrigin color =
 
 
 nextCell : Cell -> Direction -> Maybe Cell
-nextCell start dir =
-    let
-        ( row, col ) =
-            start
-    in
-    case dir of
-        Up ->
-            fromInt { row = row + 1, col = col }
-
-        Down ->
-            fromInt { row = row - 1, col = col }
-
-        Left ->
-            fromInt { row = row, col = col - 1 }
-
-        Right ->
-            fromInt { row = row, col = col + 1 }
-
-        UpLeft ->
-            jump start [ Up, Left ]
-
-        UpRight ->
-            jump start [ Up, Right ]
-
-        DownLeft ->
-            jump start [ Down, Left ]
-
-        DownRight ->
-            jump start [ Down, Right ]
+nextCell ( srcRow, srcCol ) ( row, col ) =
+    fromInt { row = srcRow + row, col = srcCol + col }
 
 
 followDirection : Cell -> Direction -> List Cell
@@ -306,18 +272,6 @@ followDirection start dir =
     in
     nextCell start dir
         |> Maybe.unwrap [] doRepeat
-
-
-jump : Cell -> List Direction -> Maybe Cell
-jump start dirs =
-    let
-        flipMove dir cell =
-            nextCell cell dir
-
-        nextDir dir cell =
-            Maybe.andThen (flipMove dir) cell
-    in
-    List.foldl nextDir (Just start) dirs
 
 
 capture : Board -> Color -> Cell -> Direction -> Maybe Cell
@@ -333,12 +287,13 @@ capture board color start dir =
 captureDirection : Board -> Color -> Cell -> Direction -> Maybe Cell
 captureDirection board color start dir =
     let
-        isNotOpponent cell =
-            isEmpty board cell || isColor color board cell
+        isValidTarget =
+            isColor (oppositeColor color) board
     in
     followDirection start dir
-        |> List.dropWhile isNotOpponent
+        |> List.dropWhile (isEmpty board)
         |> List.head
+        |> Maybe.filter isValidTarget
 
 
 captureAllDirections : Board -> Cell -> Color -> List Direction -> List Cell
@@ -373,36 +328,48 @@ toStandardMove src dst =
     { src = src, dst = dst, moveType = Standard }
 
 
+toPawnStartMove : Cell -> Cell -> Move
+toPawnStartMove src dst =
+    { src = src, dst = dst, moveType = PawnStart }
+
+
 pawnForward : Color -> Direction
 pawnForward color =
     if color == White then
-        Up
+        ( 1, 0 )
 
     else
-        Down
+        ( -1, 0 )
 
 
 rookDirections : List Direction
 rookDirections =
-    [ Up, Down, Left, Right ]
-
-
-knightDirections : List (List Direction)
-knightDirections =
-    [ [ Up, Up, Left ]
-    , [ Up, Up, Right ]
-    , [ Up, Right, Right ]
-    , [ Up, Left, Left ]
-    , [ Down, Down, Right ]
-    , [ Down, Down, Left ]
-    , [ Down, Left, Left ]
-    , [ Down, Right, Right ]
+    [ ( 1, -1 )
+    , ( 1, 0 )
+    , ( 1, 1 )
+    , ( 0, 1 )
+    , ( 0, 1 )
+    , ( -1, 1 )
+    , ( -1, 0 )
+    , ( -1, -1 )
     ]
+
+
+knightDirections : List Direction
+knightDirections =
+    List.uniquePairs [ 2, 1 ]
+        ++ List.uniquePairs [ 2, -1 ]
+        ++ List.uniquePairs [ -2, 1 ]
+        ++ List.uniquePairs [ -2, -1 ]
 
 
 bishopDirections : List Direction
 bishopDirections =
-    [ UpRight, UpLeft, DownRight, DownLeft ]
+    [ ( 1, 1 )
+    , ( 1, -1 )
+    , ( -1, 1 )
+    , ( -1, -1 )
+    ]
 
 
 kingDirections : List Direction
@@ -421,21 +388,23 @@ rookMoves board start =
         |> List.map (toStandardMove start)
 
 
+rookCaptures : Board -> Cell -> Color -> List Move
+rookCaptures board start color =
+    captureAllDirections board start color rookDirections
+        |> List.map (toStandardMove start)
+
+
 knightMoves : Board -> Cell -> List Move
 knightMoves board start =
-    List.filterMap (jump start) knightDirections
-        |> List.filter (isEmpty board)
+    List.map (step board start) knightDirections
+        |> Maybe.values
         |> List.map (toStandardMove start)
 
 
 knightCaptures : Board -> Cell -> Color -> List Move
 knightCaptures board start color =
-    let
-        isOpponent =
-            isColor (oppositeColor color) board
-    in
-    List.filterMap (jump start) knightDirections
-        |> List.filter isOpponent
+    List.map (capture board color start) knightDirections
+        |> Maybe.values
         |> List.map (toStandardMove start)
 
 
@@ -492,20 +461,21 @@ pawnMoves board start color hasMoved =
         pawnDir =
             pawnForward color
 
-        firstStep =
+        pawnStep =
             step board start pawnDir
+                |> Maybe.map (toStandardMove start)
 
-        secondStep =
-            firstStep
+        pawnStart =
+            pawnStep
                 |> Maybe.andThen
-                    (\c ->
-                        step board c pawnDir
+                    (\move ->
+                        step board move.dst pawnDir
                     )
+                |> Maybe.map (toPawnStartMove start)
     in
-    [ firstStep, secondStep ]
+    [ pawnStep, pawnStart ]
         |> List.take moveNb
         |> Maybe.values
-        |> List.map (toStandardMove start)
 
 
 pawnCaptures : Board -> Cell -> Color -> List Move
@@ -513,10 +483,10 @@ pawnCaptures board start color =
     let
         captureDirections =
             if color == White then
-                [ UpRight, UpLeft ]
+                [ ( 1, 1 ), ( 1, -1 ) ]
 
             else
-                [ DownRight, DownLeft ]
+                [ ( -1, 1 ), ( -1, -1 ) ]
     in
     captureDirections
         |> List.map (capture board color start)
@@ -551,6 +521,38 @@ enPassant start color prevMove =
 
         _ ->
             Nothing
+
+
+allCaptures : Board -> Color -> List Move
+allCaptures board color =
+    let
+        filterColor _ piece =
+            piece.color == color
+
+        captureMoves cell piece =
+            case piece.pieceType of
+                Rook ->
+                    rookCaptures board cell piece.color
+
+                Knight ->
+                    knightCaptures board cell piece.color
+
+                Bishop ->
+                    bishopCaptures board cell piece.color
+
+                King _ ->
+                    kingCaptures board cell piece.color
+
+                Queen ->
+                    queenCaptures board cell piece.color
+
+                Pawn _ ->
+                    pawnCaptures board cell piece.color
+    in
+    Dict.filter filterColor board
+        |> Dict.map captureMoves
+        |> Dict.values
+        |> List.concat
 
 
 

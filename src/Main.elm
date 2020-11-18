@@ -28,8 +28,8 @@ type Color
 
 
 type PieceType
-    = Pawn Bool
-    | King { kingCastling : Bool, queenCastling : Bool }
+    = Pawn
+    | King
     | Queen
     | Rook
     | Knight
@@ -40,6 +40,7 @@ type alias Piece =
     { pieceType : PieceType
     , color : Color
     , position : Cell
+    , hasMoved : Bool
     }
 
 
@@ -81,10 +82,7 @@ type MoveType
     = Standard
     | PawnStart
     | EnPassant Piece
-    | Castling
-        { rook : Cell
-        , rookDst : Cell
-        }
+    | Castling Move
 
 
 type CastlingType
@@ -115,26 +113,25 @@ newGame =
 availableMoves : Game -> List Move
 availableMoves (Game game) =
     let
-        simulateMove move =
-            ( move, playMove (Game game) move )
+        allMoves piece =
+            pieceCaptures game.board piece
+                ++ pieceSteps game.board piece
 
-        isMovePossible ( _, Game simulation ) =
-            not (isCheck simulation.board simulation.player)
+        simulatePieceMoves piece =
+            List.map
+                (\move -> ( move, playMove (Game game) move ))
+                (allMoves piece)
+
+        isNotCheck ( _, Game simulation ) =
+            not (isCheck simulation.board game.player)
+
+        toMove ( move, _ ) =
+            move
     in
-    game.board
-        |> Dict.filter
-            (\_ piece ->
-                piece.color == game.player
-            )
-        |> Dict.map
-            (\cell piece ->
-                pieceCaptures game.board piece
-                    ++ pieceSteps game.board piece
-            )
-        |> (List.concat << Dict.values)
-        |> List.map simulateMove
-        |> List.filter isMovePossible
-        |> List.map Tuple.first
+    colorPieces game.board game.player
+        |> List.concatMap simulatePieceMoves
+        |> List.filter isNotCheck
+        |> List.map toMove
 
 
 playMove : Game -> Move -> Game
@@ -159,13 +156,19 @@ playMove (Game game) move =
 
 applyMove : Board -> Move -> Board
 applyMove board move =
+    let
+        newBoard =
+            movePiece board move.piece move.dst
+    in
     case move.moveType of
         EnPassant target ->
-            movePiece board move.piece move.dst
-                |> (\newBoard -> removePiece newBoard target)
+            removePiece newBoard target
+
+        Castling rookMove ->
+            applyMove newBoard rookMove
 
         _ ->
-            movePiece board move.piece move.dst
+            newBoard
 
 
 
@@ -179,14 +182,13 @@ startingBoard =
             List.map (Tuple.pair index) (List.range 1 8)
 
         pawns =
-            List.repeat 8
-                (Pawn False)
+            List.repeat 8 Pawn
 
         majorPieces =
             [ Rook
             , Knight
             , Bishop
-            , King { kingCastling = True, queenCastling = True }
+            , King
             , Queen
             , Bishop
             , Knight
@@ -196,7 +198,11 @@ startingBoard =
         rowPieces index color pieces =
             List.map2
                 (\pieceType pos ->
-                    { color = color, pieceType = pieceType, position = pos }
+                    { color = color
+                    , pieceType = pieceType
+                    , position = pos
+                    , hasMoved = False
+                    }
                 )
                 pieces
                 (row index)
@@ -219,8 +225,7 @@ isThreatenedBy board target color =
         getCaptures =
             pieceCaptures board
     in
-    Dict.values board
-        |> List.filter ((==) color << .color)
+    colorPieces board color
         |> List.concatMap getCaptures
         |> List.any ((==) target << .dst)
 
@@ -228,24 +233,36 @@ isThreatenedBy board target color =
 isCheck : Board -> Color -> Bool
 isCheck board color =
     let
-        isKing piece =
-            case piece.pieceType of
-                King _ ->
-                    True
-
-                _ ->
-                    False
-
-        isChecked_ cell =
-            isThreatenedBy board cell (oppositeColor color)
+        isAttacked piece =
+            isThreatenedBy
+                board
+                piece.position
+                (oppositeColor piece.color)
     in
-    board
-        |> Dict.filter
-            (\_ piece ->
-                isKing piece && piece.color == color
-            )
-        |> (List.head << Dict.keys)
-        |> Maybe.unwrap False isChecked_
+    findKing board color
+        |> Maybe.unwrap False isAttacked
+
+
+findKing : Board -> Color -> Maybe Piece
+findKing board color =
+    let
+        isKing piece =
+            piece.pieceType == King && piece.color == color
+    in
+    allPieces board
+        |> List.filter isKing
+        |> List.head
+
+
+allPieces : Board -> List Piece
+allPieces =
+    Dict.values
+
+
+colorPieces : Board -> Color -> List Piece
+colorPieces board color =
+    allPieces
+        |> List.filter ((==) color << .color)
 
 
 pieceAt : Board -> Cell -> Maybe Piece
@@ -281,7 +298,10 @@ movePiece : Board -> Piece -> Cell -> Board
 movePiece board piece target =
     let
         newPiece =
-            { piece | position = target }
+            { piece
+                | position = target
+                , hasMoved = True
+            }
     in
     removePiece board piece
         |> Dict.insert target newPiece
@@ -490,22 +510,19 @@ pieceCaptures board piece =
         Bishop ->
             captureDirs bishopDirections
 
-        King _ ->
+        King ->
             captureNext kingDirections
 
         Queen ->
             captureDirs queenDirections
 
-        Pawn _ ->
+        Pawn ->
             captureNext (pawnCaptureDirections piece.color)
 
 
 pieceSteps : Board -> Piece -> List Move
 pieceSteps board piece =
     let
-        opponentColor =
-            oppositeColor piece.color
-
         stepNext dirs =
             List.filterMap (nextEmptyCell board piece.position) dirs
                 |> List.map (toStandardMove piece)
@@ -533,17 +550,17 @@ pieceSteps board piece =
         Bishop ->
             stepDirs bishopDirections
 
-        King _ ->
+        King ->
             stepNext kingDirections
 
         Queen ->
             stepDirs queenDirections
 
-        Pawn hasMoved ->
+        Pawn ->
             [ pawnFirstStep, pawnStart ]
                 |> List.andMap [ pawnMoveDirection piece.color ]
                 |> Maybe.values
-                |> List.take (pawnMoveNb hasMoved)
+                |> List.take (pawnMoveNb piece.hasMoved)
 
 
 

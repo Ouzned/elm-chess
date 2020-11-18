@@ -66,6 +66,7 @@ type Game
         , board : Board
         , gameHistory : List Game
         , lastMove : Maybe Move
+        , availableMoves : List Move
         , isCheck : Bool
         , isCheckmate : Bool
         }
@@ -95,39 +96,52 @@ type alias Direction =
 
 newGame : Game
 newGame =
+    let
+        board =
+            startingBoard
+
+        nextMoves =
+            availableMoves board White False Nothing
+    in
     Game
         { player = White
-        , board = startingBoard
+        , board = board
         , gameHistory = []
+        , availableMoves = nextMoves
         , lastMove = Nothing
         , isCheck = False
         , isCheckmate = False
         }
 
 
-availableMoves : Board -> Color -> Maybe Move -> List Move
-availableMoves board color lastMove =
+availableMoves : Board -> Color -> Bool -> Maybe Move -> List Move
+availableMoves board player isCheck lastMove =
     let
         allMoves piece =
             pieceCaptures board piece
                 ++ pieceSteps board piece
                 ++ enPassantMoves board lastMove
+                ++ castlings
+
+        castlings =
+            if isCheck then
+                []
+
+            else
+                castlingMoves board player
 
         simulatePieceMoves piece =
             List.map
                 (\move -> ( move, applyMove board move ))
                 (allMoves piece)
 
-        isNotCheck ( _, simulation ) =
-            not (isCheck simulation color)
-
-        toMove ( move, _ ) =
-            move
+        isCheck_ simulation =
+            isPlayerCheck simulation player
     in
-    colorPieces board color
+    colorPieces board player
         |> List.concatMap simulatePieceMoves
-        |> List.filter isNotCheck
-        |> List.map toMove
+        |> List.filterNot (isCheck_ << Tuple.second)
+        |> List.map Tuple.first
 
 
 playMove : Game -> Move -> Game
@@ -139,22 +153,26 @@ playMove (Game game) move =
         nextBoard =
             applyMove game.board move
 
-        nextMoves =
-            availableMoves nextBoard nextPlayer game.lastMove
+        lastMove =
+            Just move
 
-        isPlayerCheck =
-            isCheck nextBoard nextPlayer
+        isCheck =
+            isPlayerCheck nextBoard nextPlayer
+
+        nextMoves =
+            availableMoves nextBoard nextPlayer isCheck lastMove
 
         isCheckmate =
-            isPlayerCheck && List.length nextMoves == 0
+            isCheck && List.length nextMoves == 0
     in
     Game
         { game
             | player = nextPlayer
             , board = nextBoard
             , gameHistory = game.gameHistory ++ [ Game game ]
-            , lastMove = Just move
-            , isCheck = isPlayerCheck
+            , availableMoves = nextMoves
+            , lastMove = lastMove
+            , isCheck = isCheck
             , isCheckmate = isCheckmate
         }
 
@@ -225,27 +243,36 @@ startingBoard =
 
 
 isThreatenedBy : Board -> Cell -> Color -> Bool
-isThreatenedBy board target color =
+isThreatenedBy board cell color =
     let
-        getCaptures =
+        pieces =
+            colorPieces board color
+
+        captureMoves =
             pieceCaptures board
+
+        allCaptures =
+            List.concatMap captureMoves pieces
+
+        targetsCell move =
+            move.dst == cell
     in
-    colorPieces board color
-        |> List.concatMap getCaptures
-        |> List.any ((==) target << .dst)
+    List.any targetsCell allCaptures
 
 
-isCheck : Board -> Color -> Bool
-isCheck board color =
+isPlayerCheck : Board -> Color -> Bool
+isPlayerCheck board color =
     let
+        opponentColor =
+            oppositeColor color
+
+        king =
+            findKing board color
+
         isAttacked piece =
-            isThreatenedBy
-                board
-                piece.position
-                (oppositeColor piece.color)
+            isThreatenedBy board piece.position opponentColor
     in
-    findKing board color
-        |> Maybe.unwrap False isAttacked
+    Maybe.unwrap False isAttacked king
 
 
 findKing : Board -> Color -> Maybe Piece
@@ -266,8 +293,14 @@ allPieces =
 
 colorPieces : Board -> Color -> List Piece
 colorPieces board color =
-    allPieces board
-        |> List.filter ((==) color << .color)
+    let
+        pieces =
+            allPieces board
+
+        isRightColor piece =
+            piece.color == color
+    in
+    List.filter isRightColor pieces
 
 
 kingAtStartPos : Board -> Color -> Maybe Piece
@@ -298,11 +331,13 @@ isEmpty board cell =
 isColor : Color -> Board -> Cell -> Bool
 isColor color board cell =
     let
-        sameColor =
-            (==) color << .color
+        targetPiece =
+            pieceAt board cell
+
+        isSameColor piece =
+            piece.color == color
     in
-    pieceAt board cell
-        |> Maybe.unwrap False sameColor
+    Maybe.unwrap False isSameColor targetPiece
 
 
 oppositeColor : Color -> Color
@@ -322,9 +357,14 @@ movePiece board piece target =
                 | position = target
                 , hasMoved = True
             }
+
+        removedBoard =
+            removePiece board piece
+
+        finalBoard =
+            Dict.insert target newPiece removedBoard
     in
-    removePiece board piece
-        |> Dict.insert target newPiece
+    finalBoard
 
 
 removePiece : Board -> Piece -> Board
@@ -349,11 +389,6 @@ fromInt { row, col } =
         Nothing
 
 
-isNextTo : Cell -> Cell -> Bool
-isNextTo ( row, col ) ( row_, col_ ) =
-    row == row_ && abs (col - col_) == 1
-
-
 nextCell : Cell -> Direction -> Maybe Cell
 nextCell ( srcRow, srcCol ) ( row, col ) =
     fromInt
@@ -365,34 +400,54 @@ nextCell ( srcRow, srcCol ) ( row, col ) =
 sideCells : Cell -> List Cell
 sideCells ( row, col ) =
     let
-        list =
-            [ fromInt { row = row, col = col + 1 }
-            , fromInt { row = row, col = col - 1 }
+        cells =
+            [ fromInt
+                { row = row
+                , col = col + 1
+                }
+            , fromInt
+                { row = row
+                , col = col - 1
+                }
             ]
     in
-    Maybe.values list
+    Maybe.values cells
 
 
 followDirection : Cell -> Direction -> List Cell
 followDirection start dir =
     let
-        doRepeat c =
-            c :: followDirection c dir
+        firstCell =
+            nextCell start dir
+
+        follow cell =
+            cell :: followDirection cell dir
     in
-    nextCell start dir
-        |> Maybe.unwrap [] doRepeat
+    Maybe.unwrap [] follow firstCell
 
 
 nextEmptyCell : Board -> Cell -> Direction -> Maybe Cell
-nextEmptyCell board cell dir =
-    nextCell cell dir
-        |> Maybe.filter (isEmpty board)
+nextEmptyCell board start dir =
+    let
+        targetCell =
+            nextCell start dir
+
+        cellIsEmpty =
+            isEmpty board
+    in
+    Maybe.filter cellIsEmpty targetCell
 
 
 nextColorCell : Board -> Cell -> Color -> Direction -> Maybe Cell
-nextColorCell board cell color dir =
-    nextCell cell dir
-        |> Maybe.filter (isColor color board)
+nextColorCell board start color dir =
+    let
+        targetCell =
+            nextCell start dir
+
+        isRightColor =
+            isColor color board
+    in
+    Maybe.filter isRightColor targetCell
 
 
 findColorCell : Board -> Cell -> Color -> Direction -> Maybe Cell
@@ -405,8 +460,14 @@ findColorCell board start color dir =
 
 findEmptyCells : Board -> Cell -> Direction -> List Cell
 findEmptyCells board start dir =
-    followDirection start dir
-        |> List.takeWhile (isEmpty board)
+    let
+        cells =
+            followDirection start dir
+
+        cellIsEmpty =
+            isEmpty board
+    in
+    List.takeWhile cellIsEmpty cells
 
 
 
@@ -529,15 +590,50 @@ toEnPassantMove piece opponent dst =
 
 toCastlingMove : Piece -> Piece -> Cell -> Cell -> Move
 toCastlingMove king rook kingDst rookDst =
+    let
+        rookMove =
+            toStandardMove rook rookDst
+    in
     { piece = king
     , dst = kingDst
-    , moveType = Castling (toStandardMove rook rookDst)
+    , moveType = Castling rookMove
     }
+
+
+captureNext : Board -> Piece -> List Direction -> List Move
+captureNext board piece dirs =
+    let
+        opponentColor =
+            oppositeColor piece.color
+
+        capture dir =
+            nextColorCell board piece.position opponentColor dir
+                |> Maybe.map (toStandardMove piece)
+    in
+    List.filterMap capture dirs
+
+
+captureDirs : Board -> Piece -> List Direction -> List Move
+captureDirs board piece dirs =
+    let
+        opponentColor =
+            oppositeColor piece.color
+
+        capture dir =
+            findColorCell board piece.position opponentColor dir
+                |> Maybe.map (toStandardMove piece)
+    in
+    List.filterMap capture dirs
 
 
 castlingMoves : Board -> Color -> List Move
 castlingMoves board color =
     let
+        attackedCells =
+            colorPieces board (oppositeColor color)
+                |> List.concatMap (pieceCaptures board)
+                |> List.map .dst
+
         king =
             findKing board color
 
@@ -550,7 +646,7 @@ castlingMoves board color =
         doCastling pieces dir =
             case pieces of
                 [ kingPiece, rookPiece ] ->
-                    castlingHelper board kingPiece rookPiece dir
+                    castlingHelper board kingPiece rookPiece dir attackedCells
 
                 _ ->
                     Nothing
@@ -561,18 +657,15 @@ castlingMoves board color =
         ]
 
 
-castlingHelper : Board -> Piece -> Piece -> Direction -> Maybe Move
-castlingHelper board king rook dir =
+castlingHelper : Board -> Piece -> Piece -> Direction -> List Cell -> Maybe Move
+castlingHelper board king rook dir attackedCells =
     let
-        opponentColor =
-            oppositeColor king.color
-
         path =
             findEmptyCells board king.position dir
                 |> List.take 2
 
         isAttacked cell =
-            isThreatenedBy board cell opponentColor
+            List.member cell attackedCells
 
         isUnSafe =
             List.any isAttacked path
@@ -591,11 +684,20 @@ castlingHelper board king rook dir =
 
 enPassantMoves : Board -> Maybe Move -> List Move
 enPassantMoves board lastMove =
-    Maybe.unwrap [] (enPassantHelper board) lastMove
+    let
+        enPassant move =
+            case move.moveType of
+                PawnStart ->
+                    enPassantHelper board move
+
+                _ ->
+                    []
+    in
+    Maybe.unwrap [] enPassant lastMove
 
 
 enPassantHelper : Board -> Move -> List Move
-enPassantHelper board { moveType, piece, dst } =
+enPassantHelper board { piece, dst } =
     let
         opponentColor =
             oppositeColor piece.color
@@ -614,46 +716,33 @@ enPassantHelper board { moveType, piece, dst } =
         toMove target =
             List.map (\pawn -> toEnPassantMove pawn piece target) sidePawns
     in
-    case moveType of
-        PawnStart ->
-            Maybe.unwrap [] toMove targetCell
-
-        _ ->
-            []
+    Maybe.unwrap [] toMove targetCell
 
 
 pieceCaptures : Board -> Piece -> List Move
 pieceCaptures board piece =
     let
-        opponentColor =
-            oppositeColor piece.color
-
-        captureDirs dirs =
-            List.filterMap (findColorCell board piece.position opponentColor) dirs
-                |> List.map (toStandardMove piece)
-
-        captureNext dirs =
-            List.filterMap (nextColorCell board piece.position opponentColor) dirs
-                |> List.map (toStandardMove piece)
+        pawnDirections =
+            pawnCaptureDirections piece.color
     in
     case piece.pieceType of
         Rook ->
-            captureDirs rookDirections
+            captureDirs board piece rookDirections
 
         Knight ->
-            captureNext knightDirections
+            captureNext board piece knightDirections
 
         Bishop ->
-            captureDirs bishopDirections
+            captureDirs board piece bishopDirections
 
         King ->
-            captureNext kingDirections
+            captureNext board piece kingDirections
 
         Queen ->
-            captureDirs queenDirections
+            captureDirs board piece queenDirections
 
         Pawn ->
-            captureNext (pawnCaptureDirections piece.color)
+            captureNext board piece pawnDirections
 
 
 pieceSteps : Board -> Piece -> List Move
@@ -688,7 +777,6 @@ pieceSteps board piece =
 
         King ->
             stepNext kingDirections
-                ++ castlingMoves board piece.color
 
         Queen ->
             stepDirs queenDirections

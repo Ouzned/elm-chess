@@ -110,25 +110,26 @@ newGame =
         }
 
 
-availableMoves : Game -> List Move
-availableMoves (Game game) =
+availableMoves : Board -> Color -> Maybe Move -> List Move
+availableMoves board color lastMove =
     let
         allMoves piece =
-            pieceCaptures game.board piece
-                ++ pieceSteps game.board piece
+            pieceCaptures board piece
+                ++ pieceSteps board piece
+                ++ enPassantMoves board lastMove
 
         simulatePieceMoves piece =
             List.map
-                (\move -> ( move, playMove (Game game) move ))
+                (\move -> ( move, applyMove board move ))
                 (allMoves piece)
 
-        isNotCheck ( _, Game simulation ) =
-            not (isCheck simulation.board game.player)
+        isNotCheck ( _, simulation ) =
+            not (isCheck simulation color)
 
         toMove ( move, _ ) =
             move
     in
-    colorPieces game.board game.player
+    colorPieces board color
         |> List.concatMap simulatePieceMoves
         |> List.filter isNotCheck
         |> List.map toMove
@@ -140,17 +141,26 @@ playMove (Game game) move =
         nextPlayer =
             oppositeColor game.player
 
-        newBoard =
+        nextBoard =
             applyMove game.board move
+
+        nextMoves =
+            availableMoves nextBoard nextPlayer game.lastMove
+
+        isPlayerCheck =
+            isCheck nextBoard nextPlayer
+
+        isCheckmate =
+            isPlayerCheck && List.length nextMoves == 0
     in
     Game
         { game
             | player = nextPlayer
-            , board = newBoard
+            , board = nextBoard
             , gameHistory = game.gameHistory ++ [ Game game ]
             , lastMove = Just move
-            , isCheck = isCheck newBoard nextPlayer
-            , isCheckmate = False
+            , isCheck = isPlayerCheck
+            , isCheckmate = isCheckmate
         }
 
 
@@ -207,7 +217,7 @@ startingBoard =
                 pieces
                 (row index)
 
-        allPieces =
+        piecesList =
             rowPieces 1 White majorPieces
                 ++ rowPieces 2 White pawns
                 ++ rowPieces 7 Black pawns
@@ -216,7 +226,7 @@ startingBoard =
         insertPiece piece board =
             Dict.insert piece.position piece board
     in
-    List.foldl insertPiece Dict.empty allPieces
+    List.foldl insertPiece Dict.empty piecesList
 
 
 isThreatenedBy : Board -> Cell -> Color -> Bool
@@ -261,7 +271,7 @@ allPieces =
 
 colorPieces : Board -> Color -> List Piece
 colorPieces board color =
-    allPieces
+    allPieces board
         |> List.filter ((==) color << .color)
 
 
@@ -340,6 +350,17 @@ nextCell ( srcRow, srcCol ) ( row, col ) =
         { row = srcRow + row
         , col = srcCol + col
         }
+
+
+sideCells : Cell -> List Cell
+sideCells ( row, col ) =
+    let
+        list =
+            [ fromInt { row = row, col = col + 1 }
+            , fromInt { row = row, col = col - 1 }
+            ]
+    in
+    Maybe.values list
 
 
 followDirection : Cell -> Direction -> List Cell
@@ -475,6 +496,39 @@ toEnPassantMove piece opponent dst =
     , dst = dst
     , moveType = EnPassant opponent
     }
+
+
+enPassantMoves : Board -> Maybe Move -> List Move
+enPassantMoves board lastMove =
+    Maybe.unwrap [] (enPassantHelper board) lastMove
+
+
+enPassantHelper : Board -> Move -> List Move
+enPassantHelper board { moveType, piece, dst } =
+    let
+        opponentColor =
+            oppositeColor piece.color
+
+        isPlayerPawn p =
+            p.color == opponentColor && p.pieceType == Pawn
+
+        sidePawns =
+            sideCells dst
+                |> List.filterMap (pieceAt board)
+                |> List.filter isPlayerPawn
+
+        targetCell =
+            nextCell dst (pawnMoveDirection opponentColor)
+
+        toMove target =
+            List.map (\pawn -> toEnPassantMove pawn piece target) sidePawns
+    in
+    case moveType of
+        PawnStart ->
+            Maybe.unwrap [] toMove targetCell
+
+        _ ->
+            []
 
 
 unThreatenedMoves : Board -> Color -> List Move -> List Move

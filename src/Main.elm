@@ -85,11 +85,6 @@ type MoveType
     | Castling Move
 
 
-type CastlingType
-    = CastlingQueen
-    | CastlingKing
-
-
 type alias Direction =
     ( Row, Col )
 
@@ -273,6 +268,21 @@ colorPieces : Board -> Color -> List Piece
 colorPieces board color =
     allPieces board
         |> List.filter ((==) color << .color)
+
+
+kingAtStartPos : Board -> Color -> Maybe Piece
+kingAtStartPos board color =
+    pieceAt board ( startRow color, 4 )
+
+
+queenSideRook : Board -> Color -> Maybe Piece
+queenSideRook board color =
+    pieceAt board ( startRow color, 8 )
+
+
+kingSideRook : Board -> Color -> Maybe Piece
+kingSideRook board color =
+    pieceAt board ( startRow color, 1 )
 
 
 pieceAt : Board -> Cell -> Maybe Piece
@@ -470,6 +480,25 @@ pawnMoveNb hasMoved =
         2
 
 
+startRow : Color -> Row
+startRow color =
+    if color == White then
+        1
+
+    else
+        8
+
+
+kingCastlingDirection : Direction
+kingCastlingDirection =
+    ( 0, -1 )
+
+
+queenCastlingDirection : Direction
+queenCastlingDirection =
+    ( 0, 1 )
+
+
 
 -- PIECE MOVES --
 
@@ -496,6 +525,68 @@ toEnPassantMove piece opponent dst =
     , dst = dst
     , moveType = EnPassant opponent
     }
+
+
+toCastlingMove : Piece -> Piece -> Cell -> Cell -> Move
+toCastlingMove king rook kingDst rookDst =
+    { piece = king
+    , dst = kingDst
+    , moveType = Castling (toStandardMove rook rookDst)
+    }
+
+
+castlingMoves : Board -> Color -> List Move
+castlingMoves board color =
+    let
+        king =
+            findKing board color
+
+        kingSide =
+            Maybe.values [ king, kingSideRook board color ]
+
+        queenSide =
+            Maybe.values [ king, queenSideRook board color ]
+
+        doCastling pieces dir =
+            case pieces of
+                [ kingPiece, rookPiece ] ->
+                    castlingHelper board kingPiece rookPiece dir
+
+                _ ->
+                    Nothing
+    in
+    Maybe.values
+        [ doCastling kingSide kingCastlingDirection
+        , doCastling queenSide queenCastlingDirection
+        ]
+
+
+castlingHelper : Board -> Piece -> Piece -> Direction -> Maybe Move
+castlingHelper board king rook dir =
+    let
+        opponentColor =
+            oppositeColor king.color
+
+        path =
+            findEmptyCells board king.position dir
+                |> List.take 2
+
+        isAttacked cell =
+            isThreatenedBy board cell opponentColor
+
+        isUnSafe =
+            List.any isAttacked path
+    in
+    if rook.hasMoved || king.hasMoved || isUnSafe then
+        Nothing
+
+    else
+        case path of
+            [ rookDst, kingDst ] ->
+                Just (toCastlingMove king rook kingDst rookDst)
+
+            _ ->
+                Nothing
 
 
 enPassantMoves : Board -> Maybe Move -> List Move
@@ -529,15 +620,6 @@ enPassantHelper board { moveType, piece, dst } =
 
         _ ->
             []
-
-
-unThreatenedMoves : Board -> Color -> List Move -> List Move
-unThreatenedMoves board color moves =
-    List.filter
-        (\{ dst } ->
-            not (isThreatenedBy board dst color)
-        )
-        moves
 
 
 pieceCaptures : Board -> Piece -> List Move
@@ -606,6 +688,7 @@ pieceSteps board piece =
 
         King ->
             stepNext kingDirections
+                ++ castlingMoves board piece.color
 
         Queen ->
             stepDirs queenDirections
